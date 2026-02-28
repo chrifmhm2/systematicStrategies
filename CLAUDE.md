@@ -4,6 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
+## Session Continuity
+
+At the **start of every new session**, before doing anything else:
+1. Read all files in `.claude/sessions/` in order (session1, session2, …)
+2. Load the context — what was built, decisions made, current state, what comes next
+3. Confirm to the user which session you loaded and what the next step is
+
+Session files follow the naming convention:
+```
+.claude/sessions/session1_phase1_complete.md
+.claude/sessions/session2_phase2_complete.md
+...
+```
+
+---
+
 ## Learning Convention
 
 When the user prefixes a message with **`[Learn]`**, treat it as a learning question:
