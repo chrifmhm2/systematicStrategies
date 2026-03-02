@@ -421,3 +421,269 @@ delta_i ≈ (price(spot + eps) - price(spot)) / eps
 # Approximates ∂C/∂S without knowing the analytic formula
 # More precise with smaller eps, but too small → numerical noise
 ```
+
+---
+
+## Phase 3 — Backtesting Engine: Python & Coding Patterns
+
+---
+
+### `@dataclass` with `field(default_factory=...)` — mutable defaults
+
+```python
+from dataclasses import dataclass, field
+import pandas as pd
+
+@dataclass
+class BacktestResult:
+    portfolio_values: pd.Series = field(default_factory=pd.Series)
+    trades_log:       list[dict] = field(default_factory=list)
+    risk_metrics:     dict       = field(default_factory=dict)
+```
+
+**Rule:** Never use a mutable object (list, dict, pd.Series, pd.DataFrame) as a default value directly in a dataclass. Every instance would share the SAME object.
+
+```python
+# BAD — all instances share the same list!
+@dataclass
+class Foo:
+    items: list = []
+
+a, b = Foo(), Foo()
+a.items.append(1)
+print(b.items)  # [1] — bug!
+
+# GOOD — each instance gets its own fresh list
+@dataclass
+class Foo:
+    items: list = field(default_factory=list)
+```
+
+---
+
+### `TYPE_CHECKING` guard — circular import solution
+
+**Problem:** `results.py` needs `BacktestConfig` for type annotation. `engine.py` imports `BacktestResult` from `results.py`. Circular!
+
+**Solution:** import only at type-check time, not at runtime.
+
+```python
+# results.py
+from __future__ import annotations   # PEP 563: all annotations are lazy strings
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.backtester.engine import BacktestConfig   # only runs with mypy/pylance
+
+@dataclass
+class BacktestResult:
+    config: BacktestConfig | None = None  # at runtime: just the string "BacktestConfig"
+```
+
+How it works:
+- `TYPE_CHECKING` is `False` at runtime → `if` block never executes
+- `TYPE_CHECKING` is `True` when mypy/pylance runs → types are resolved correctly
+- `from __future__ import annotations` makes all annotations strings → Python never evaluates `BacktestConfig` at runtime
+
+---
+
+### Local import inside a method — another circular import technique
+
+```python
+# rebalancing.py
+class ThresholdRebalancing(RebalancingOracle):
+    def should_rebalance(self, current_date, portfolio):
+        from core.models.portfolio import Portfolio  # ← import only when function runs
+        if not isinstance(portfolio, Portfolio):
+            return True
+```
+
+When to use:
+- The import would create a circular dependency at module load time
+- The function is not called at import time (safe to defer)
+- You need the actual class at runtime (unlike TYPE_CHECKING which is runtime-invisible)
+
+---
+
+### `dict` accumulator → pandas conversion
+
+**Pattern:** accumulate results into a plain dict (O(1) inserts), convert to pandas once at the end (O(n)):
+
+```python
+# BAD — O(n²) due to pd.Series reconstruction on every append
+pv_series = pd.Series(dtype=float)
+for t in dates:
+    pv_series[t] = compute_value()
+
+# GOOD — O(n) total
+pv_dict: dict = {}
+for t in dates:
+    pv_dict[t] = compute_value()
+
+pv_series = pd.Series(pv_dict)                    # dict → Series
+pv_series.index = pd.DatetimeIndex(pv_series.index)  # ensure DatetimeIndex
+
+# Same for DataFrames
+weights_records: dict = {}                         # {timestamp: {col: val, ...}}
+weights_df = pd.DataFrame(weights_records).T       # .T: rows=timestamps, cols=symbols
+```
+
+---
+
+### `time.perf_counter()` for profiling
+
+```python
+import time
+start = time.perf_counter()
+# ... long computation ...
+elapsed_ms = (time.perf_counter() - start) * 1000
+```
+
+- Returns float seconds with nanosecond resolution
+- `time.time()` is lower resolution and drifts with clock adjustments
+- `timeit` module is better for microbenchmarks; `perf_counter` is for single production timings
+
+---
+
+### pandas `loc[:t]` — inclusive upper bound slice
+
+Critical for no look-ahead bias:
+
+```python
+prices = pd.DataFrame(...)  # DatetimeIndex rows
+
+# loc with DatetimeIndex: INCLUSIVE on both ends
+history = prices.loc[:t]    # all rows with index ≤ t   ← correct
+
+# Contrast with list slicing: EXCLUSIVE upper bound
+lst = [1, 2, 3, 4, 5]
+lst[:3]  # [1, 2, 3]  ← index 3 excluded
+```
+
+A common mistake: using `iloc` (position-based) or Python slices when you want `loc` (label-based).
+
+---
+
+### yfinance multi-level column handling
+
+```python
+import yfinance as yf
+
+raw = yf.download(["AAPL", "MSFT"], start="2023-01-01", end="2023-06-30",
+                  auto_adjust=True, progress=False)
+
+# Multiple tickers → MultiIndex columns: (metric, ticker)
+print(type(raw.columns))    # pd.MultiIndex
+
+if isinstance(raw.columns, pd.MultiIndex):
+    df = raw["Close"]       # select "Close" level → flat df with AAPL, MSFT columns
+
+# Single ticker → flat columns: Open, High, Low, Close, Volume
+else:
+    df = raw[["Close"]]
+    df.columns = ["AAPL"]  # rename
+
+df = df.ffill()  # fill weekends/holidays with last known price
+```
+
+`auto_adjust=True` gives split-adjusted and dividend-adjusted prices — essential for correct backtesting.
+
+---
+
+### Spy / monkey-patch pattern in tests
+
+Test what arguments a function receives without modifying production code:
+
+```python
+# Production strategy has compute_weights(date, history, portfolio)
+original_compute = strategy.compute_weights
+received_data = []
+
+def spy(current_date, price_history, current_portfolio=None):
+    received_data.append((current_date, price_history.index.copy()))  # record
+    return original_compute(current_date, price_history, current_portfolio)  # delegate
+
+strategy.compute_weights = spy   # replace with spy
+
+engine.run(strategy, provider)   # run production code
+
+# Now verify what the strategy received
+for call_date, idx in received_data:
+    assert all(ts.date() <= call_date for ts in idx)  # no future dates
+```
+
+This is the **spy pattern**: record + delegate. Unlike a mock (which returns fake values), a spy calls through to the real implementation.
+
+---
+
+### isinstance check with lazy-imported type
+
+```python
+from core.models.portfolio import Portfolio  # local import
+
+if not isinstance(portfolio, Portfolio):
+    return True   # can't compute drift → safe to rebalance
+```
+
+`isinstance(obj, Class)` needs the actual class object at runtime. That's why we can't use `TYPE_CHECKING` here — we need the real `Portfolio` class to do the check.
+
+---
+
+### `dataclass` `field` vs plain assignment
+
+| Scenario | Correct syntax |
+|---|---|
+| Immutable default (int, float, str) | `x: int = 5` |
+| Mutable default (list, dict, pd.Series) | `x: list = field(default_factory=list)` |
+| Computed default | `x: int = field(default_factory=lambda: expensive_computation())` |
+| No default (required field) | `x: int` (no default) |
+
+---
+
+### Algorithmic patterns in Phase 3
+
+**Pattern 1: Guard-continue loop**
+```python
+for t in prices.index:
+    # expensive computation skipped until conditions met
+    if len(prices.loc[:t]) < required_history:
+        continue
+    if not oracle.should_rebalance(t_date, portfolio):
+        continue
+    # only reach here when conditions are met
+    rebalance()
+```
+
+**Pattern 2: Two-pass accumulation** (build dict, convert once at end)
+```python
+results = {}                           # pass 1: accumulate
+for t in dates:
+    results[t] = compute(t)
+series = pd.Series(results)            # pass 2: convert once
+```
+
+**Pattern 3: Epsilon comparison for floats**
+```python
+# Never: delta_qty != 0  (floats are never exactly equal)
+# Use:
+if abs(delta_qty) > 1e-9:
+    record_trade(delta_qty)
+
+# Never: value == expected
+# Use:
+assert abs(value - expected) < 1e-6
+```
+
+**Pattern 4: State machine via instance variable**
+```python
+class PeriodicRebalancing:
+    def __init__(self):
+        self._last_rebalance_date = None  # state
+
+    def should_rebalance(self, date, portfolio):
+        if self._last_rebalance_date is None or date.month != self._last_rebalance_date.month:
+            self._last_rebalance_date = date  # update state
+            return True
+        return False
+```
+The oracle is a **stateful object** — it remembers its last action. Each backtest needs a fresh oracle instance.

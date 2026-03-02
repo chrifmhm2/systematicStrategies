@@ -15,6 +15,7 @@ Session files follow the naming convention:
 ```
 .claude/sessions/session1_phase1_complete.md
 .claude/sessions/session2_phase2_complete.md
+.claude/sessions/session3_phase3_complete.md
 ...
 ```
 

@@ -360,3 +360,155 @@ Cannot be solved analytically — we use **Newton-Raphson** iteration:
 σ_new = σ_old - (BS(σ_old) - market_price) / vega(σ_old)
 ```
 Repeat until convergence. Vega is the derivative used because it measures how the BS price changes with σ.
+
+---
+
+## Phase 3 — Backtesting Engine Math
+
+---
+
+### Self-Financing Constraint
+
+The fundamental invariant every backtester must enforce:
+
+> **No money is created or destroyed during rebalancing. The only leak is transaction costs.**
+
+```
+V_after_rebalance = V_before_rebalance − TC
+```
+
+In detail:
+```
+V_t = Σᵢ (qᵢ × Pᵢ(t)) + cash(t)          ← mark-to-market NAV before rebalancing
+
+equity_deployed = Σᵢ (new_qᵢ × Pᵢ(t))    ← value of new positions
+total_costs = Σᵢ TC(|Δqᵢ × Pᵢ(t)|)        ← total transaction costs
+
+new_cash = V_t - equity_deployed - total_costs  ← cash left after rebalancing
+```
+
+The engine **asserts** this holds to machine precision:
+```
+|equity_deployed + new_cash - (V_t - total_costs)| < 1e-6
+```
+
+Why it matters: a bug that adds even 1 cent of free cash per rebalancing (×250 per year × 20 years) would completely distort the backtest.
+
+---
+
+### Mark-to-Market (MtM) Valuation
+
+Pricing the portfolio at current market prices every day:
+```
+V(t) = Σᵢ qᵢ × Pᵢ(t) + cash(t)
+```
+- Positions `qᵢ` don't change between rebalancings
+- Prices `Pᵢ(t)` update every day
+- Cash grows with the risk-free rate
+
+This is the standard approach in institutional portfolios ("daily P&L mark").
+
+---
+
+### Transaction Costs — Basis Points
+
+**1 basis point (bps) = 0.01% = 10⁻⁴**
+
+```
+TC(trade) = |trade_value| × (commission_bps + slippage_bps) / 10 000
+TC(trade) = max(TC(trade), min_commission)
+```
+
+**Commission**: explicit broker fee. Retail: 5–25 bps. Institutional: 0.5–3 bps.
+
+**Slippage / Market Impact**: the execution price is never the quoted price.
+- **Bid-ask spread**: you buy at the ask, sell at the bid. Half-spread ≈ 2–10 bps for liquid stocks.
+- **Market impact**: large orders move the price against you (Almgren-Chriss model).
+- For small retail trades, slippage dominates over market impact.
+
+Combined 15 bps on a $1M trade = $1,500 per rebalancing.
+Annual turnover of 100% × 15 bps × 2 sides = 30 bps annual drag ≈ 0.30% performance cost.
+
+---
+
+### Cash Interest Accrual
+
+Uninvested cash earns the risk-free rate (held in T-bills / money market):
+```
+cash(t) = cash(t-1) × (1 + r_f × Δt)
+```
+- `r_f` = annualized risk-free rate (e.g. 0.05 = 5%)
+- `Δt = 1/252` = one trading day (252 trading days per year convention)
+
+This is a first-order approximation of continuous compounding `e^(r_f Δt)`.
+For `r_f = 5%`, daily factor ≈ 1.000198. Over 252 days: `(1.000198)^252 ≈ 1.0512 ≈ e^0.05`. 
+
+---
+
+### Weight Drift — Threshold Rebalancing
+
+After rebalancing to target `w*`, asset returns cause weights to drift:
+```
+w_i(t) = (q_i × P_i(t)) / V(t)
+```
+Portfolio drifts from target:
+```
+drift_i(t) = |w_i(t) - w*_i|
+```
+Rebalance if: `max_i drift_i(t) > threshold`
+
+**Cost-drift trade-off:**
+- Very tight threshold (0.1%) → rebalance almost daily → high TC → lower net return
+- Very loose threshold (10%) → portfolio strays far from target → tracking error increases
+
+Optimal threshold depends on asset volatility and cost level. For 15 bps costs and 20% vol assets, typical threshold: 3–5%.
+
+---
+
+### Equal-Weight Buy-and-Hold Benchmark
+
+The **passive benchmark** — simplest possible portfolio:
+```
+q_i = (initial_value / N) / P_i(t₀)   ← buy equal dollar amounts on day 1
+benchmark(t) = Σᵢ q_i × P_i(t)        ← value floats with prices, never trade again
+```
+
+Properties:
+- Zero transaction costs
+- Zero forecasting
+- Returns converge to the equally-weighted portfolio return over time
+
+Any active strategy must beat this benchmark to justify its complexity and costs.
+
+---
+
+### Required History — Estimation Risk
+
+Quantitative strategies estimate parameters from historical data:
+```
+MinVariance needs: Σ (N×N covariance matrix) ← requires enough data to be non-singular
+MaxSharpe needs:   μ (expected returns)       ← very noisy with short history
+Momentum needs:    trailing returns            ← need at least one lookback window
+```
+
+Rule of thumb: for a reliable N×N covariance matrix, need at least 3N data points.
+For N=10 assets, need 30+ trading days minimum.
+
+The engine enforces this: if `len(history) < required_history_days`, skip rebalancing.
+
+---
+
+### No Look-Ahead Bias — The Critical Rule
+
+**Look-ahead bias** = accidentally using future information to make past decisions.
+Example: on 2023-01-02, knowing that AAPL will rise 10% on 2023-01-10 and buying accordingly.
+
+This is the single most common and dangerous bug in backtesting. A backtester with look-ahead bias will produce impossibly good results that evaporate in live trading.
+
+Engine protection:
+```python
+history = prices.loc[:t]   # strict: only rows with index ≤ t
+pw = strategy.compute_weights(t_date, history, portfolio)
+```
+
+With a pandas DatetimeIndex, `loc[:t]` is **inclusive** — it gives all rows up to and including `t`, never a row after `t`.

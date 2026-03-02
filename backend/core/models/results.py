@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
+import pandas as pd
+
+if TYPE_CHECKING:
+    from core.backtester.engine import BacktestConfig
 
 
 @dataclass
@@ -33,23 +38,29 @@ class BacktestResult:
     """
     Full output of a backtest run.
 
-    Populated by BacktestEngine in Phase 3.
-    Fields are filled incrementally during the backtest loop.
+    Populated by BacktestEngine (Phase 3).
+    risk_metrics is filled by Phase 4 risk analytics.
     """
 
-    portfolio_values: dict[str, float] = field(default_factory=dict)
-    # date string → portfolio NAV
+    portfolio_values: pd.Series = field(default_factory=pd.Series)
+    # DatetimeIndex → portfolio NAV (float)
 
-    benchmark_values: dict[str, float] | None = None
-    # date string → benchmark NAV (buy-and-hold equal weight)
+    benchmark_values: pd.Series | None = None
+    # DatetimeIndex → benchmark NAV (equal-weight buy-and-hold)
 
-    weights_history: dict[str, dict[str, float]] = field(default_factory=dict)
-    # date string → {symbol: weight}
+    weights_history: pd.DataFrame = field(default_factory=pd.DataFrame)
+    # DatetimeIndex (rebalancing dates) × symbol columns → weight at each rebalancing
 
     trades_log: list[dict] = field(default_factory=list)
-    # one entry per trade: {date, symbol, side, quantity, price, cost}
+    # one entry per trade: {date, symbol, quantity, price, cost}
 
     risk_metrics: dict = field(default_factory=dict)
     # populated by Phase 4 risk analytics after the loop completes
+
+    config: BacktestConfig | None = None
+    # the BacktestConfig used to produce this result
+
+    strategy_name: str = ""
+    # name of the strategy that produced this result
 
     computation_time_ms: float = 0.0
