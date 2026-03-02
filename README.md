@@ -1,87 +1,45 @@
 # QuantForge
 
-A production-grade quantitative finance platform for pricing options, backtesting systematic strategies, and computing risk analytics — built in Python and React.
+A full-stack quantitative finance platform — backtest systematic strategies on live market data, analyse risk, price options, and simulate delta hedging. Built from scratch in Python + React.
 
 ---
 
-## Overview
+## What you get
 
-QuantForge is a full-stack quant engine inspired by an academic delta-hedging project (Ensimag). It reimplements and extends the original .NET system in Python, adding a modern REST API and interactive dashboard.
+| Page | What it does |
+|------|-------------|
+| **Home** | Live equity-curve preview (3 strategies auto-run on load) |
+| **Backtest** | Run any of the 8 strategies on real or simulated data, full metrics + charts |
+| **Comparison** | 2–4 strategies side by side — overlaid curves, metric table |
+| **Risk** | VaR 95%, CVaR, Sharpe, Sortino, Calmar, max drawdown, Beta, Alpha |
+| **Delta Hedging** | Replicate basket option payoffs across Monte Carlo paths |
+| **Option Pricing** | Black-Scholes or Monte Carlo, full Greeks, strike sweep |
 
+---
+
+## Prerequisites
+
+| Tool | Minimum | Notes |
+|------|---------|-------|
+| Python | 3.10 | 3.12 recommended |
+| Node.js | 18 | Use [nvm](https://github.com/nvm-sh/nvm) if your system node is old |
+| npm | 9+ | Comes with Node |
+| git | any | |
+
+Internet access is required on first run — the backend fetches price data from Yahoo Finance.
+
+---
+
+## Quick start (full stack)
+
+### 1 — Clone
+
+```bash
+git clone <repo-url> systematicStrategies
+cd systematicStrategies
 ```
-systematicStrategies/
-├── backend/          # Python quant engine + FastAPI
-│   ├── core/         # Pure Python — no web deps
-│   │   ├── models/   # Data models (Portfolio, Options, Results…)
-│   │   ├── data/     # Data providers (Simulated, CSV, Yahoo)
-│   │   ├── pricing/  # Black-Scholes, Monte Carlo
-│   │   ├── strategies/  # 8 systematic strategies  ← Phase 2
-│   │   ├── backtester/  # Backtest engine          ← Phase 3
-│   │   └── risk/        # VaR, Greeks, metrics     ← Phase 4
-│   └── api/          # FastAPI routes               ← Phase 5
-├── frontend/         # React 18 dashboard           ← Phase 6
-└── docs/
-    └── PRD.md        # Full product requirements
-```
 
----
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Quant Engine | Python 3.10+, NumPy, SciPy, pandas |
-| API | FastAPI + uvicorn |
-| Frontend | React 18 + TypeScript + Vite + Tailwind CSS + Recharts |
-| Data | yfinance (real), GBM simulation (synthetic), CSV (Ensimag format) |
-| Testing | pytest + pytest-cov |
-| Containers | Docker + docker-compose ← Phase 7 |
-
----
-
-## Current Status — Phase 1 complete
-
-| Phase | Description | Status |
-|-------|-------------|--------|
-| **Phase 1** | Core engine foundation | ✅ Done |
-| Phase 2 | Strategy framework (8 strategies) | 🔲 Planned |
-| Phase 3 | Backtesting engine | 🔲 Planned |
-| Phase 4 | Risk analytics (VaR, Greeks) | 🔲 Planned |
-| Phase 5 | FastAPI backend | 🔲 Planned |
-| Phase 6 | React frontend | 🔲 Planned |
-| Phase 7 | Docker + CI/CD + deployment | 🔲 Planned |
-
-### What's implemented in Phase 1
-
-**Data Models** (`core/models/`)
-- `DataFeed`, `OHLCV` — market data primitives
-- `Position`, `Portfolio` — portfolio snapshot with mark-to-market valuation
-- `VanillaOption`, `BasketOption` — option contracts
-- `PricingResult`, `BacktestResult` — output containers
-
-**Data Layer** (`core/data/`)
-- `IDataProvider` — abstract interface (strategies never depend on concrete providers)
-- `SimulatedDataProvider` — correlated GBM paths via Cholesky decomposition
-- `CsvDataProvider` — Ensimag-format CSV loader (`Id`, `DateOfPrice`, `Value`)
-
-**Pricing Utilities** (`core/pricing/`)
-- `cholesky_decompose` — Cholesky factor with positive-definite guard
-- `generate_correlated_normals` — correlated N(0,1) draws
-
-**Black-Scholes Model** (`core/pricing/black_scholes.py`)
-- `call_price`, `put_price` (put-call parity)
-- All Greeks: `delta`, `gamma`, `vega`, `theta`, `rho`
-- `implied_volatility` via Newton-Raphson
-
----
-
-## Quickstart
-
-### Prerequisites
-- Python 3.10+
-- pip or uv
-
-### Backend setup
+### 2 — Backend
 
 ```bash
 cd backend
@@ -90,67 +48,172 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
-# Install all dependencies
+# Install the package and all dependencies
 pip install -e ".[dev]"
 
-# Run tests
+# Start the API server
+uvicorn main:app --reload --port 8000
+```
+
+The API will be live at **http://localhost:8000**
+Interactive docs (Swagger UI) at **http://localhost:8000/docs**
+
+### 3 — Frontend (new terminal)
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open **http://localhost:5173** — the app proxies all `/api` requests to the backend on `:8000`, so no CORS setup is needed.
+
+> **Node version issue?**
+> If `npm install` fails because your system Node is too old (e.g. v12), install a recent version via nvm:
+> ```bash
+> nvm install 24
+> nvm use 24
+> npm install
+> npm run dev
+> ```
+
+---
+
+## Platform tour
+
+Once both servers are running, visit **http://localhost:5173**:
+
+1. **Home page** loads immediately and auto-runs a live backtest comparison — you will see an equity curve appear after a few seconds while data is fetched from Yahoo Finance.
+
+2. Go to **Backtest** to run a single strategy:
+   - Pick a strategy from the dropdown (grouped by family)
+   - Add asset tickers (e.g. `AAPL`, `MSFT`, `GOOGL`)
+   - Set a date range and click **Run Backtest**
+   - Results: 8 metric cards, equity curve, drawdown, portfolio weights, trades log
+
+3. Go to **Comparison** to run 2–4 strategies on the same universe in one shot.
+
+4. Go to **Risk** for the full 14-metric risk report + return distribution histogram.
+
+5. Go to **Hedging** to simulate delta (or delta-gamma) hedging of a basket option.
+
+6. Go to **Pricing** for Black-Scholes / Monte Carlo pricing, Greeks, and a 21-point strike sweep.
+
+---
+
+## Available strategies
+
+| Family | ID | Description |
+|--------|----|-------------|
+| allocation | `equal_weight` | Rebalance to equal weights every period |
+| allocation | `min_variance` | Minimum variance portfolio (QP) |
+| allocation | `max_sharpe` | Maximum Sharpe ratio portfolio (QP) |
+| allocation | `risk_parity` | Equal risk contribution |
+| signal | `momentum` | Buy top-N assets by trailing return |
+| signal | `mean_reversion` | Buy bottom-N assets (reversal) |
+| hedging | `delta_hedge` | Delta-neutral replication |
+| hedging | `delta_gamma_hedge` | Delta + gamma neutral replication |
+
+---
+
+## Project structure
+
+```
+systematicStrategies/
+├── backend/
+│   ├── main.py              # FastAPI entry point
+│   ├── config.py            # Settings / env vars
+│   ├── core/                # Pure Python quant engine (no web deps)
+│   │   ├── models/          # DataFeed, Portfolio, Options, Results
+│   │   ├── data/            # IDataProvider, Simulated, Yahoo, CSV
+│   │   ├── pricing/         # Black-Scholes, Monte Carlo
+│   │   ├── strategies/      # IStrategy, StrategyRegistry, 8 strategies
+│   │   ├── backtester/      # BacktestEngine, rebalancing, costs
+│   │   └── risk/            # PerformanceMetrics, VaR, Greeks
+│   ├── api/
+│   │   ├── schemas.py       # Pydantic request / response models
+│   │   └── routes/          # strategies, backtest, hedging, risk, pricing
+│   └── tests/               # pytest suite (116 tests, 80%+ coverage)
+└── frontend/
+    └── src/
+        ├── api/             # Axios client + TypeScript types
+        ├── components/      # layout/, charts/, common/
+        ├── pages/           # 6 route-level pages
+        ├── hooks/           # useBacktest, useStrategies, useRiskMetrics
+        └── utils/           # formatters, colors
+```
+
+---
+
+## Development
+
+### Backend tests
+
+```bash
+cd backend
+source .venv/bin/activate
+
+# Run all tests
 pytest tests/ -v
 
-# Run with coverage
-pytest tests/ --cov=core --cov-report=term-missing
+# With coverage
+pytest tests/ --cov=core --cov-fail-under=80
+
+# Lint
+ruff check .
 ```
 
-### REPL quick demo
+### Frontend build check
 
-```python
-from core.pricing.black_scholes import BlackScholesModel
-from core.pricing.monte_carlo import MonteCarloPricer   # Phase 1 in progress
-from core.data import SimulatedDataProvider
-import numpy as np
-from datetime import date
-
-# Black-Scholes — ATM call
-print(BlackScholesModel.call_price(100, 100, 1, 0.05, 0.2))  # ~10.45
-
-# Simulate correlated price paths
-provider = SimulatedDataProvider(
-    spots={"AAPL": 150.0, "MSFT": 300.0},
-    volatilities={"AAPL": 0.25, "MSFT": 0.20},
-    correlation=np.array([[1.0, 0.6], [0.6, 1.0]]),
-    seed=42,
-)
-df = provider.get_prices(["AAPL", "MSFT"], date(2024, 1, 2), date(2024, 12, 31))
-print(df.head())
+```bash
+cd frontend
+npm run build    # TypeScript compile + Vite bundle (must be 0 errors)
+npm run lint     # ESLint
 ```
+
+### API docs
+
+With the backend running, visit **http://localhost:8000/docs** for the full Swagger UI — you can call every endpoint directly from the browser without touching the frontend.
 
 ---
 
-## Key Design Principles
+## Adding a new strategy
 
-**No look-ahead bias**
-`BacktestEngine` only passes `prices.loc[:t]` to `strategy.compute_weights()` at date `t`.
+1. Create `backend/core/strategies/<family>/<your_strategy>.py`
+2. Decorate the class with `@StrategyRegistry.register`
+3. Implement `compute_weights(prices_df) -> pd.Series`
+4. Define `param_schema` as a class variable (the UI will auto-render a form for it)
+5. Restart uvicorn — the strategy appears immediately in the dropdown
 
-**Self-financing**
-Portfolio value before and after rebalancing must be equal — transaction costs are deducted from cash, not created from thin air.
-
-**Data source independence**
-Strategies and the backtester always code against `IDataProvider`, never against `YahooDataProvider` or `SimulatedDataProvider` directly. Swap data sources with zero strategy code change.
-
-**Strategy as a plugin**
-Registering a new strategy requires only creating a file and decorating the class with `@StrategyRegistry.register`.
-
-**`core/` has zero web dependencies**
-The quant engine works standalone in a notebook or CLI — no FastAPI, no uvicorn.
+No frontend code changes required.
 
 ---
 
-## Strategies (Phase 2)
+## Status
 
-| Family | Strategy |
-|--------|----------|
-| Hedging | Delta Hedge, Delta-Gamma Hedge |
-| Allocation | Equal Weight, Min Variance, Max Sharpe, Risk Parity |
-| Signal | Momentum, Mean Reversion |
+| Phase | What it builds | Status |
+|-------|---------------|--------|
+| 1 | Core models, Black-Scholes, Monte Carlo, simulated data | ✅ Done |
+| 2 | 8 strategies, StrategyRegistry | ✅ Done |
+| 3 | Backtest engine, rebalancing oracles, Yahoo data | ✅ Done |
+| 4 | Risk metrics, VaR/CVaR, Greeks calculator | ✅ Done |
+| 5 | FastAPI + all 6 route files + Pydantic schemas | ✅ Done |
+| 6 | React dashboard — 6 pages, charts, dynamic forms | ✅ Done |
+| 7 | Docker + docker-compose, CI/CD, deployment | 🔲 Planned |
+
+---
+
+## Key design principles
+
+**No look-ahead bias** — `BacktestEngine` passes only `prices.loc[:t]` to the strategy at date `t`.
+
+**Self-financing** — portfolio value is identical before and after rebalancing; transaction costs come out of cash.
+
+**Data-source independence** — strategies code against `IDataProvider`; swap Yahoo for simulated data with one parameter.
+
+**Plugin architecture** — one decorated class = one new strategy; `param_schema` surfaces automatically in the UI.
+
+**`core/` has zero web dependencies** — use the quant engine standalone in a notebook or CLI, no FastAPI needed.
 
 ---
 
