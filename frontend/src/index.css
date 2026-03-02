@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    background-color: #0f1117;
+    color: #c8ccd8;
+    font-family: Inter, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Recharts tooltip & legend text */
+  .recharts-tooltip-label,
+  .recharts-legend-item-text {
+    color: #c8ccd8 !important;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #1a1d27; }
+  ::-webkit-scrollbar-thumb { background: #2a2d3d; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #6272a4; }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-accent hover:bg-blue-500 text-white font-semibold px-4 py-2 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-secondary {
+    @apply bg-elevated hover:bg-dim text-prose font-medium px-4 py-2 rounded-lg border border-dim transition-colors;
+  }
+  .card {
+    @apply bg-card rounded-xl border border-dim p-4;
+  }
+  .input {
+    @apply bg-elevated border border-dim rounded-lg px-3 py-2 text-prose text-sm focus:outline-none focus:border-accent;
+  }
+  .label {
+    @apply text-muted text-xs font-medium uppercase tracking-wider mb-1;
+  }
+}
