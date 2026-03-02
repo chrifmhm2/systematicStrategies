@@ -687,3 +687,252 @@ class PeriodicRebalancing:
         return False
 ```
 The oracle is a **stateful object** — it remembers its last action. Each backtest needs a fresh oracle instance.
+
+---
+
+## Phase 4 — Risk Analytics: Python & Code Patterns
+
+---
+
+### Static-only class (no state, no instantiation)
+
+All three risk classes (`PerformanceMetrics`, `VaRCalculator`, `GreeksCalculator`) use only `@staticmethod` methods and are never instantiated.
+
+```python
+class PerformanceMetrics:
+    @staticmethod
+    def total_return(values: pd.Series) -> float:
+        ...
+
+    @staticmethod
+    def sharpe_ratio(values: pd.Series, risk_free_rate: float = 0.05) -> float:
+        ...
+```
+
+**Why?**
+- Risk functions are **pure functions** — output depends only on inputs, no internal state
+- `@staticmethod` communicates intent: "this belongs to the class namespace but needs no instance"
+- Callers write `PerformanceMetrics.sharpe_ratio(values)` — clear, no object to manage
+- Compared to module-level functions: grouping in a class provides a discoverable namespace
+
+**When NOT to use:** if functions share state (e.g. a model that learns from data), use a regular class with `__init__`.
+
+---
+
+### `math.isnan()` vs `pd.isna()` vs `np.isnan()`
+
+Three different NaN checks, for different types:
+
+```python
+import math, pandas as pd, numpy as np
+
+x = float("nan")
+s = pd.Series([1.0, float("nan"), 3.0])
+
+math.isnan(x)       # True  — works for Python float only (crashes on pd.Series!)
+pd.isna(x)          # True  — works for float, None, pd.NaT, pd.NA, np.nan
+pd.isna(s)          # Series of bool — element-wise
+np.isnan(x)         # True  — works for float and numpy arrays
+```
+
+In `PerformanceMetrics` we use `math.isnan(ann_vol)` because `ann_vol` is guaranteed to be a Python `float` (returned by our own static methods). This is faster and more explicit.
+
+---
+
+### `pd.Series.quantile()` for VaR
+
+```python
+returns.quantile(1 - confidence)   # e.g. confidence=0.95 → returns.quantile(0.05)
+```
+
+`quantile(q)` returns the value below which `q` fraction of the data falls.
+- `quantile(0.05)` = 5th percentile = value that 95% of returns are above
+- For a returns series with 500 days: sorts the 500 returns, takes the 25th worst (5%)
+- This IS the historical VaR (as a loss, it's negative: -0.02 = 2% loss)
+
+**Rolling version:**
+```python
+returns.rolling(window=60).quantile(0.05)
+```
+Recomputes the 5th percentile using only the last 60 values at each date. NaN for first 59 entries.
+
+---
+
+### `pd.Series.cummax()` for drawdown
+
+```python
+rolling_max = values.cummax()           # running maximum: grows or stays flat, never drops
+drawdown = (values - rolling_max) / rolling_max  # always ≤ 0
+mdd = float(drawdown.min())             # worst (most negative)
+```
+
+`cummax()` at position t = `max(values[0], values[1], ..., values[t])`.
+It creates the "high-water mark" series. When the portfolio falls below its peak, the difference is the drawdown.
+
+```
+values:      100, 110, 120, 105, 115
+cummax():    100, 110, 120, 120, 120
+drawdown:    0,   0,   0, -12.5%, -4.2%
+```
+
+---
+
+### `scipy.stats.norm.ppf()` — inverse normal CDF
+
+```python
+from scipy.stats import norm
+
+norm.ppf(0.95)   # → 1.6449  (z-score for 95th percentile)
+norm.ppf(0.99)   # → 2.3263  (z-score for 99th percentile)
+norm.ppf(0.05)   # → -1.6449 (5th percentile — left tail)
+```
+
+`ppf` = Percent Point Function = inverse CDF.
+Given a probability `p`, returns `z` such that `P(X ≤ z) = p` for a standard normal `X`.
+
+Used in parametric VaR:
+```python
+mu, sigma = returns.mean(), returns.std()
+z = norm.ppf(confidence)        # e.g. 1.645 for 95%
+VaR = mu - z * sigma            # returns are normally distributed — assumed
+```
+
+---
+
+### `pd.DataFrame.diff()` for turnover
+
+```python
+changes = weights_history.diff().dropna()
+# diff(): each row = current_row - previous_row (element-wise)
+# dropna(): first row has no previous → all NaN → drop it
+
+turnover_per_rebalance = changes.abs().sum(axis=1)
+# abs(): absolute change per (date, asset)
+# sum(axis=1): sum across assets → total change on that rebalancing date
+
+avg_turnover = float(turnover_per_rebalance.mean())
+```
+
+`axis=1` = sum along columns (across assets), leaving one value per row (per date). `axis=0` would sum along rows (across dates), which is not what we want.
+
+---
+
+### `pd.Series.align()` for synchronizing two series
+
+```python
+port_ret, bench_ret = port_ret.align(bench_ret, join="inner")
+```
+
+When portfolio and benchmark have different date indices (e.g. different holidays, different start dates), `align(join="inner")` keeps only dates present in **both** series — guaranteed same length and same index.
+
+Without `.align()`, arithmetic like `port_ret - bench_ret` would produce NaN for every date not shared between the two.
+
+---
+
+### Nested loop → numpy array (meshgrid pattern)
+
+`compute_greeks_surface` builds a 2D result via nested loops over spot and vol:
+
+```python
+n_s, n_v = len(spots), len(vols)
+delta_arr = np.empty((n_s, n_v))   # pre-allocate — faster than appending
+
+for i, S in enumerate(spots):
+    for j, sigma in enumerate(vols):
+        try:
+            delta_arr[i, j] = BlackScholesModel.delta(S, strike, T, r, sigma)
+        except (ValueError, ZeroDivisionError):
+            delta_arr[i, j] = np.nan
+
+return {"delta": delta_arr.tolist(), ...}   # convert to pure Python list for JSON
+```
+
+**`np.empty()` vs `np.zeros()`:** `empty` allocates memory without initializing — faster if every cell will be filled (as here). `zeros` initializes to 0 — use if some cells might remain unfilled.
+
+**`.tolist()`:** converts a numpy array to a nested Python list so it can be JSON-serialized (numpy arrays are not JSON-serializable by default).
+
+**`enumerate(spots)`:** yields `(index, value)` pairs — gives `i` for array indexing AND `S` for computation in one line.
+
+---
+
+### Local import inside `compute_all()` to avoid circular deps
+
+```python
+# metrics.py
+@staticmethod
+def compute_all(values, ...):
+    from core.risk.var import VaRCalculator   # ← inside the method body
+    ...
+    result["var_95"] = VaRCalculator.historical_var(returns, confidence=0.95)
+```
+
+If we put `from core.risk.var import VaRCalculator` at the top of `metrics.py`, Python would resolve it at import time. If `var.py` ever imports anything from `metrics.py` (directly or transitively), there would be a circular import error.
+
+By deferring the import to inside the function body:
+- The import only runs when `compute_all()` is called (not at module load)
+- No circular import at module level
+- Python caches modules — after the first call, subsequent calls don't re-import (just look up `sys.modules`)
+
+This is a third circular-import technique (after `TYPE_CHECKING` guard and plain local import in `rebalancing.py`).
+
+---
+
+### `try/except (ValueError, ZeroDivisionError)` → NaN policy
+
+```python
+for i, S in enumerate(spots):
+    for j, sigma in enumerate(vols):
+        try:
+            delta_arr[i, j] = BlackScholesModel.delta(S, strike, T, r, sigma)
+        except (ValueError, ZeroDivisionError):
+            delta_arr[i, j] = np.nan
+```
+
+**Why catch both?**
+- `ValueError`: raised when inputs are mathematically invalid (e.g. `sigma ≤ 0`, `T ≤ 0`)
+- `ZeroDivisionError`: can occur with extreme parameter combinations (`S=0`, `sigma=0`)
+
+**Why NaN instead of 0 or crashing?**
+- `0` would be misleading (delta=0 has real meaning: option is worth nothing)
+- Crashing would abort the entire surface calculation for one bad cell
+- `NaN` propagates visually in the heatmap as a blank/missing cell — clearly wrong, not silently wrong
+
+**Broad tuple except:**
+```python
+except (ValueError, ZeroDivisionError):  # catches either
+```
+More specific than `except Exception` (which would hide bugs) but covers the expected failure modes.
+
+---
+
+### `pd.DataFrame` from list of dicts — `compute_greeks_over_time` pattern
+
+```python
+records = []
+for i, (date, S) in enumerate(price_history.items()):
+    T = max((n - i) / 252, 1 / 252)
+    row = {
+        "delta": BlackScholesModel.delta(S, strike, T, r, sigma),
+        "gamma": ...,
+    }
+    records.append(row)
+
+return pd.DataFrame(records, index=price_history.index)
+```
+
+`pd.DataFrame(list_of_dicts)`: each dict becomes a row, keys become column names. Pass `index=` to assign the datetime index from the price series.
+
+**Alternative (dict of dicts):** `pd.DataFrame(dict).T` — transposes so rows=dates, cols=Greeks. Both work; list-of-dicts is more readable when building row by row.
+
+---
+
+### `price_history.items()` vs `iterrows()`
+
+```python
+for date, S in price_history.items():     # on a pd.Series — yields (index, value) pairs
+for date, row in df.iterrows():           # on a pd.DataFrame — yields (index, Series) pairs
+```
+
+`price_history` is a `pd.Series` (single column of prices), so `.items()` gives `(date, price)` pairs. This is idiomatic Python (same as dict `.items()`).
+
+Do NOT use `iterrows()` on a Series — it's for DataFrames. Do NOT use `.items()` on a DataFrame — it iterates columns, not rows.

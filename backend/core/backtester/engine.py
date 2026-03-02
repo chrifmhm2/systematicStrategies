@@ -7,6 +7,7 @@ from datetime import date
 import pandas as pd
 
 from core.backtester.costs import TransactionCostModel
+from core.risk.metrics import PerformanceMetrics
 from core.backtester.rebalancing import PeriodicRebalancing, RebalancingOracle, ThresholdRebalancing
 from core.data.base import IDataProvider
 from core.models.portfolio import Portfolio, Position
@@ -218,12 +219,20 @@ class BacktestEngine:
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
+        # ── 9. Compute risk metrics [P4-16] ────────────────────────────────
+        risk_metrics = PerformanceMetrics.compute_all(
+            values=pv_series,
+            benchmark=benchmark_series,
+            weights_history=weights_df,
+            risk_free_rate=risk_free_rate,
+        )
+
         return BacktestResult(
             portfolio_values=pv_series,
             benchmark_values=benchmark_series,
             weights_history=weights_df,
             trades_log=trades_log,
-            risk_metrics={},
+            risk_metrics=risk_metrics,
             config=cfg,
             strategy_name=strategy.config.name,
             computation_time_ms=elapsed_ms,

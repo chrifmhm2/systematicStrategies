@@ -498,6 +498,199 @@ The engine enforces this: if `len(history) < required_history_days`, skip rebala
 
 ---
 
+---
+
+## Phase 4 — Risk Analytics Math
+
+---
+
+### Performance Metrics
+
+All metrics operate on a NAV (Net Asset Value) series: a daily portfolio value curve starting at `initial_value`.
+
+**Total Return**
+```
+TR = (V_T - V_0) / V_0
+```
+Simple return from first to last observation. Does not account for time — a 50% gain over 1 year vs 10 years is very different.
+
+**Annualized Return (CAGR)**
+```
+ann_return = (1 + TR)^(252/N) - 1
+```
+Compound Annual Growth Rate. `N` = number of trading days in the series, 252 = trading days per year.
+E.g. 50% total over 504 days: `(1.5)^(252/504) - 1 ≈ 22.5% annualized`
+
+**Annualized Volatility**
+```
+ann_vol = std(daily_returns) × √252
+```
+Daily returns: `r_t = (V_t - V_{t-1}) / V_{t-1}` = simple pct_change.
+`√252` scales daily std to annual from i.i.d. assumption: `Var(annual) = 252 × Var(daily)`.
+
+---
+
+### Sharpe Ratio
+
+```
+Sharpe = (ann_return - r_f) / ann_vol
+```
+Excess return per unit of **total** risk. >1 is good; >2 is excellent; >3 is suspicious.
+
+**Limitation:** penalizes upside volatility the same as downside. A strategy that sometimes wins big looks risky here.
+
+---
+
+### Sortino Ratio
+
+```
+downside_vol = std(negative daily returns only) × √252
+Sortino = (ann_return - r_f) / downside_vol
+```
+Only downside deviations count. Better than Sharpe for strategies with asymmetric payoffs (big wins, small losses).
+
+---
+
+### Max Drawdown
+
+```
+peak(t) = max(V_0, ..., V_t)            ← running maximum (cummax)
+drawdown(t) = (V_t - peak(t)) / peak(t) ← always ≤ 0
+MDD = min(drawdown over all t)           ← most negative
+```
+Worst peak-to-trough decline. **A 50% drawdown requires 100% gain to recover** — asymmetric pain.
+Returned as a negative number: `-0.35` = 35% drawdown.
+
+---
+
+### Calmar Ratio
+
+```
+Calmar = annualized_return / |max_drawdown|
+```
+Return per unit of worst historical pain. Calmar = 1.0 means you earn back your worst drawdown every year.
+
+---
+
+### Win Rate and Profit Factor
+
+**Win Rate:** `count(r_t > 0) / count(r_t)` — fraction of profitable days.
+
+**Profit Factor:** `sum(positive returns) / |sum(negative returns)|`
+- = 1.0: break-even  |  > 1.0: profitable  |  < 1.0: losing
+
+A 40% win rate with profit factor 2.5 = wins are larger than losses → profitable overall.
+
+---
+
+### Tracking Error and Information Ratio
+
+Measure performance **relative to a benchmark**:
+
+```
+active_return_t = r_portfolio_t - r_benchmark_t
+TE  = std(active_returns) × √252           ← consistency of deviation
+IR  = (ann_port_return - ann_bench_return) / TE   ← Sharpe of alpha
+```
+
+IR > 0.5: good active manager. IR > 1.0: excellent. TE near 0: strategy closely mimics benchmark.
+
+---
+
+### Turnover
+
+```
+turnover(t) = Σᵢ |w_i(t) - w_i(t-1)|    ← at each rebalancing date
+avg_turnover = mean over all rebalancing dates
+```
+Measures portfolio churn. High turnover → high transaction costs → lower net return.
+Equal-weight drift → low turnover; momentum → high turnover (frequent asset rotation).
+
+---
+
+### Value at Risk (VaR)
+
+**Question it answers:** "What is the minimum loss in the worst X% of days?"
+
+**Historical VaR:**
+```
+VaR_α = quantile(returns, 1 - α)
+```
+Take the `(1-α)`th percentile of the actual empirical return distribution.
+- `VaR_95 = quantile(returns, 0.05)` = 5th percentile
+- If `VaR_95 = -0.02`: on the worst 5% of days, loss is AT LEAST 2%
+- No distribution assumption — uses raw data
+
+**Parametric VaR (Gaussian assumption):**
+```
+z = norm.ppf(α)        ← e.g. 1.645 for α=0.95
+VaR_α = μ - z × σ
+```
+Faster, but underestimates tail risk — real returns have fat tails.
+
+**Key invariants (always true):**
+```
+VaR_99 ≤ VaR_95 ≤ 0      ← higher confidence = more negative
+CVaR_95 ≤ VaR_95          ← CVaR averages beyond the VaR threshold
+```
+
+---
+
+### CVaR (Conditional VaR = Expected Shortfall)
+
+```
+CVaR_α = E[returns | returns ≤ VaR_α]
+       = mean of all returns worse than VaR
+```
+VaR is the threshold. CVaR is the average loss beyond the threshold.
+- If `VaR_95 = -2%` and `CVaR_95 = -3.5%`: on the worst 5% of days, average loss is 3.5%
+- CVaR is "coherent" (mathematically well-behaved); preferred by Basel III regulation over VaR
+
+---
+
+### Rolling VaR
+
+```
+rolling_VaR_95(t) = quantile(returns[t-window : t], 0.05)
+```
+Computes VaR at each date using only the last `window` days.
+Shows how **tail risk evolves** through time: spikes during crashes, falls during calm markets.
+
+---
+
+### Greeks Surface
+
+Maps how each Greek varies as you sweep two parameters simultaneously:
+- **x-axis**: implied volatility (0.05 to 0.60)
+- **y-axis**: spot price (70 to 130 for strike=100)
+
+Result: a 2D matrix (shape `n_spots × n_vols`) per Greek — visualized as a heatmap.
+
+**Surface intuition by Greek:**
+
+| Greek | ATM behaviour | Deep ITM | Deep OTM | High vol |
+|-------|--------------|----------|----------|---------|
+| Delta | ≈ 0.5 | → 1 | → 0 | smooths transition |
+| Gamma | **peaks** (fastest delta change) | → 0 | → 0 | decreases (wider dist.) |
+| Vega | large (most uncertainty) | smaller | smaller | always positive |
+| Theta | most negative (max time decay) | less negative | less negative | varies |
+
+**Gamma trap:** near expiry at ATM, gamma is very high — small price moves cause huge delta changes, forcing frequent expensive re-hedging.
+
+---
+
+### Greeks Over Time (shrinking maturity)
+
+Computes Greeks day-by-day on a price path as time-to-expiry decreases:
+```
+At step i of n total days:
+  T_remaining = max((n - i) / 252, 1/252)   ← floor at 1 trading day
+  Greeks = BS(S_i, K, T_remaining, r, σ)
+```
+Shows how a hedger's Greeks evolve through the option life — essential for understanding dynamic delta hedging.
+
+---
+
 ### No Look-Ahead Bias — The Critical Rule
 
 **Look-ahead bias** = accidentally using future information to make past decisions.
